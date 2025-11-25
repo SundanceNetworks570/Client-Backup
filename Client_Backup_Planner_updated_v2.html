@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Client Backup Planner</title>
+<style>
+  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 24px; color:#111; background: linear-gradient(180deg, #eaf4ff 0%, #f5faff 55%, #ffffff 100%); min-height: 100vh;}
+  h1 { font-size: 1.6rem; margin-bottom: 0.25rem;}
+  .sub { color:#555; margin-bottom: 1rem;}
+  .toolbar { display:flex; gap:8px; flex-wrap:wrap; margin: 12px 0 16px; align-items:center;}
+  button { border:1px solid #ccc; background:#f7f7f7; padding:8px 12px; border-radius:8px; cursor:pointer;}
+  button:hover { background:#eee;}
+  table { width:100%; border-collapse: collapse; }
+  th, td { border:1px solid #e3e3e3; padding:6px; vertical-align: middle;}
+  th { background:#fafafa; text-align:left; font-weight:600; position: sticky; top:0; z-index:1;}
+  input[type="text"], input[type="number"], select {
+    width: 100%; box-sizing:border-box; padding:6px; border:1px solid #d0d0d0; border-radius:6px; background:white;
+  }
+  .num { text-align:right; }
+  .actions { display:flex; gap:6px; }
+  .unit { width: 80px; }
+  .row-remove { background:#fff0f0; border-color:#f2b4b4;}
+  .alert_cell, .cost_cell { text-align:center; }
+  .alert_badge {
+    display:inline-block; font-weight:600; font-size:12px;
+    padding:4px 8px; border-radius:999px;
+    border:1px solid transparent;
+  }
+  .alert_ok { background:#e9f7ef; color:#1e7e34; border-color:#bfe5cc; }
+  .alert_over { background:#fff2f2; color:#b00020; border-color:#f5c0c0; }
+  .cost_badge {
+    display:inline-block; font-weight:700; font-size:12px;
+    padding:4px 8px; border-radius:6px; background:#f0f6ff; border:1px solid #cfe1ff; color:#0b3d91;
+  }
+  details.pricing { margin-top: 10px; padding:10px; border:1px dashed #ddd; border-radius:8px; background:#fff;}
+  details.pricing summary { cursor:pointer; font-weight:600; }
+  details.pricing table { width:auto; margin-top:8px;}
+</style>
+</head>
+<body>
+<h1>Client Backup Planner</h1>
+<div class="sub">Track backup devices, planned vs. actual data sizes, and monthly cost per machine.</div>
+
+<div class="toolbar">
+  <button id="addRowBtn">Add Row</button>
+  <button id="saveBtn">Save</button>
+  <button id="downloadBtn">Download HTML (with data)</button>
+
+  <span style="margin-left:8px; font-weight:600; color:#333;">Sort:</span>
+  <button id="sortClientAscBtn" title="Sort by Client Name A → Z">Client A–Z</button>
+  <button id="sortClientDescBtn" title="Sort by Client Name Z → A">Client Z–A</button>
+  <button id="sortComputerBtn" title="Sort by Computer Name">Computer ⇅</button>
+  <button id="sortDeviceTypeBtn" title="Sort by Device Type">Device Type ⇅</button>
+  <button id="sortProductBtn" title="Sort by Product Name">Product ⇅</button>
+  <button id="sortActualSizeBtn" title="Sort by Actual Data Size">Actual Size ⇅</button>
+</div>
+
+<div style="overflow:auto; max-height:70vh; border:1px solid #eee; border-radius:10px;">
+<table id="backupTable">
+  <thead>
+    <tr>
+      <th style="min-width:160px;">Client Name</th>
+      <th style="min-width:170px;">Computer Name</th>
+      <th style="min-width:130px;">Device Type</th>
+      <th style="min-width:160px;">Product Name</th>
+      <th style="min-width:190px;">Planned Data Size</th>
+      <th style="min-width:90px;">Planned Unit</th>
+      <th style="min-width:160px;">Actual Data Size</th>
+      <th style="min-width:90px;">Actual Unit</th>
+      <th style="min-width:140px;">Alert</th>
+      <th style="min-width:120px;">Cost / mo</th>
+      <th style="min-width:110px;">Actions</th>
+    </tr>
+  </thead>
+  <tbody></tbody>
+</table>
+</div>
+
+<details class="pricing">
+  <summary>Backup Service Monthly Pricing Guide (reference)</summary>
+  <div style="display:flex; gap:30px; flex-wrap:wrap;">
+    <div>
+      <h3 style="margin:6px 0;">Workstations</h3>
+      <table>
+        <tbody id="pricingWorkstations"></tbody>
+      </table>
+    </div>
+    <div>
+      <h3 style="margin:6px 0;">Servers</h3>
+      <table>
+        <tbody id="pricingServers"></tbody>
+      </table>
+    </div>
+  </div>
+  <div style="margin-top:6px; font-size:12px; color:#555;">
+    Workstation minimum is 100GB & Server minimum is 500GB. Prices are per machine; totals cannot be combined.
+  </div>
+</details>
+
+<script>
+/*** Backend (Google Sheet Web App) ***/
+const SHEET_API_URL = "https://script.google.com/macros/s/AKfycbzj6b-hjPsaZWoEfUBkEV90WZU8gqOD1ZfSLXx5bktP912kiS8-5J6jPEpwuqvqLIk/exec";
+const SHEET_TOKEN = "backup-planner-9f2a7c!";
+const SHEET_KEY = "default";
+
+/*** Initial data ***/
+const INITIAL_ROWS = [{"client": "AFTLOL", "computer": "MACBOOK-AIR-2", "device_type": "Workstation", "product": "", "planned_size": "", "planned_unit": "GB", "actual_size": 36.6, "actual_unit": "GB"}, {"client": "AWSOM", "computer": "DESKTOP-4QBS99S", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 502.7, "actual_unit": "MB"}, {"client": "AWSOM", "computer": "TRIAGE", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 313.9, "actual_unit": "MB"}, {"client": "AWSOM", "computer": "CLINICMGRDESK", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 171.8, "actual_unit": "MB"}, {"client": "AWSOM", "computer": "BOOK_KEEPING", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 35.5, "actual_unit": "GB"}, {"client": "AWSOM", "computer": "GM", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 868.7, "actual_unit": "MB"}, {"client": "AWSOM", "computer": "AWSOM1-HP", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 17.9, "actual_unit": "GB"}, {"client": "AWSOM", "computer": "SURGERY1", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 1.3, "actual_unit": "GB"}, {"client": "AWSOM", "computer": "AWSOMTAB", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 168, "actual_unit": "MB"}, {"client": "AWSOM", "computer": "VETTECH", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 575.1, "actual_unit": "MB"}, {"client": "AWSOM", "computer": "SHELT_DIRECTOR", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 1.1, "actual_unit": "GB"}, {"client": "AWSOM", "computer": "DRBOB", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 79, "actual_unit": "MB"}, {"client": "AWSOM", "computer": "AWSOM4-PC", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 229, "actual_unit": "MB"}, {"client": "Base Lab Tools", "computer": "BASELABS-SVR", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 1.7, "actual_unit": "TB"}, {"client": "Beth A. Cohen Neurology", "computer": "OFFICE-PC", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 38.9, "actual_unit": "GB"}, {"client": "Blue Rain Gallery ", "computer": "BRGSVR1", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 2.9, "actual_unit": "TB"}, {"client": "Clymer Public Library ", "computer": "CLYMERSVR02", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 268.2, "actual_unit": "GB"}, {"client": "Coolbaugh Township ", "computer": "COOLSVR01", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 57.6, "actual_unit": "GB"}, {"client": "Coolbaugh Township ", "computer": "HYPERV-PC-2025", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 55.8, "actual_unit": "GB"}, {"client": "David J Ortega DDS ", "computer": "SERVER2016", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 218.8, "actual_unit": "GB"}, {"client": "Driftstone ", "computer": "SERVER", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 2.5, "actual_unit": "GB"}, {"client": "Dunkelbergers", "computer": "BRODDUNKSVR02", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 1, "actual_unit": "TB"}, {"client": "Dunkelbergers", "computer": "DUNKSVR01", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 1500, "actual_unit": "GB"}, {"client": "Dunkelbergers", "computer": "MIKEF-21", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 273.1, "actual_unit": "GB"}, {"client": "Dunkelbergers", "computer": "BARBT-PC", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 30.7, "actual_unit": "GB"}, {"client": "Dunkelbergers", "computer": "MIKE25-BVILLE", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 18, "actual_unit": "GB"}, {"client": "Dunkelbergers", "computer": "BROD-GUNS2-25", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 358.8, "actual_unit": "MB"}, {"client": "Dunkelbergers", "computer": "BROD-GUN-OFF-23", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 2.2, "actual_unit": "GB"}, {"client": "Dunkelbergers", "computer": "OFFICE-2B", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 6.2, "actual_unit": "GB"}, {"client": "Dunkelbergers", "computer": "TERRY-2023", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 2.6, "actual_unit": "GB"}, {"client": "Dunkelbergers", "computer": "BVILLE-BUYER1", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 29.2, "actual_unit": "GB"}, {"client": "Dunkelbergers", "computer": "RANDY-PC", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 1300, "actual_unit": "MB"}, {"client": "Dunkelbergers", "computer": "BUYERS-PC", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 11.3, "actual_unit": "GB"}, {"client": "Dunkelbergers", "computer": "BARB-PC", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 31, "actual_unit": "GB"}, {"client": "Dunkelbergers", "computer": "PERRY-21", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 17.7, "actual_unit": "GB"}, {"client": "Dunkelbergers", "computer": "STBG-TIMPC", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 7.1, "actual_unit": "GB"}, {"client": "Dunkelbergers", "computer": "CARHARTT-PC", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 1.9, "actual_unit": "GB"}, {"client": "Dunkelbergers", "computer": "STBG-LADIES", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 1.6, "actual_unit": "GB"}, {"client": "Durney, Worthington & Madden", "computer": "DWSVR01", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 2.5, "actual_unit": "TB"}, {"client": "Durney, Worthington & Madden", "computer": "JACKIE-PC", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 97.7, "actual_unit": "GB"}, {"client": "Durney, Worthington & Madden", "computer": "LIZ-PC", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 94.1, "actual_unit": "GB"}, {"client": "Durney, Worthington & Madden", "computer": "HILLARY-2019", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 445.3, "actual_unit": "GB"}, {"client": "Durney, Worthington & Madden", "computer": "JEFFD-21", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 267.3, "actual_unit": "GB"}, {"client": "Durney, Worthington & Madden", "computer": "DENISE-2019", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 184.2, "actual_unit": "GB"}, {"client": "Durney, Worthington & Madden", "computer": "LAUREN-PC", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 354.6, "actual_unit": "GB"}, {"client": "Durney, Worthington & Madden", "computer": "JULIE-PC-01", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 123.1, "actual_unit": "GB"}, {"client": "Eastern Monroe Public Library", "computer": "EMPL-SERVER", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 3.2, "actual_unit": "TB"}, {"client": "Eastern Monroe Public Library", "computer": "ADMIN-PC", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 2, "actual_unit": "GB"}, {"client": "Eastern Monroe Public Library", "computer": "ASSIST-DIRECTOR", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 1.6, "actual_unit": "GB"}, {"client": "Eastern Monroe Public Library", "computer": "ADMINASSIST-PC", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 47, "actual_unit": "MB"}, {"client": "Eastern Monroe Public Library", "computer": "EMPL-DIRECTOR", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 2.7, "actual_unit": "GB"}, {"client": "Effort WoodCraft", "computer": "EWCSVR01", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 137.4, "actual_unit": "GB"}, {"client": "Eldorado Dental", "computer": "ELDODENT01", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 197.2, "actual_unit": "GB"}, {"client": "Emerald Lakes ", "computer": "ELA-SVR", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 584, "actual_unit": "GB"}, {"client": "Emerald Lakes ", "computer": "RECEPTION-2021", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 200.9, "actual_unit": "GB"}, {"client": "Emerald Lakes ", "computer": "SECURITYPC2", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 81.9, "actual_unit": "GB"}, {"client": "Emerald Lakes ", "computer": "NICOLE-2022", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 45.9, "actual_unit": "GB"}, {"client": "Finelli Consulting Engineers", "computer": "Finelli-DC", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 1014, "actual_unit": "TB"}, {"client": "First Presbyterian Church of Santa Fe ", "computer": "CLERK-PC", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 255.3, "actual_unit": "GB"}, {"client": "First Presbyterian Church of Santa Fe ", "computer": "BUSMGR", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 48.1, "actual_unit": "GB"}, {"client": "The Flag Store", "computer": "FLAGSERVER", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 117, "actual_unit": "GB"}, {"client": "The Flag Store", "computer": "Reg2", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 7.2, "actual_unit": "GB"}, {"client": "Fogels Fuel", "computer": "WS1MS", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 129.2, "actual_unit": "GB"}, {"client": "Fonseca Dentistry ", "computer": "SANCHEZSVR", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 511.4, "actual_unit": "GB"}, {"client": "Gateway Abstract Inc. ", "computer": "MICHELLE-2020", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 62.2, "actual_unit": "GB"}, {"client": "Gateway Abstract Inc. ", "computer": "SERVER", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 223.4, "actual_unit": "GB"}, {"client": "Germer CPA ", "computer": "GERMERSERVER", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 176.5, "actual_unit": "GB"}, {"client": "Hilltop Sales and Service ", "computer": "HILLTOPSVR01", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 1.6, "actual_unit": "TB"}, {"client": "Hilltop Sales and Service ", "computer": "FRONTDESK1", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 70.5, "actual_unit": "GB"}, {"client": "Hilltop Sales and Service ", "computer": "RECEPTION1-2022", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 22.6, "actual_unit": "GB"}, {"client": "Hilltop Sales and Service ", "computer": "DAN-OFFICE", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 34.7, "actual_unit": "GB"}, {"client": "Jackson Township Municpal", "computer": "MA-PC", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 82, "actual_unit": "GB"}, {"client": "Jackson Township Municpal ", "computer": "JACKIEPC", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 64.1, "actual_unit": "GB"}, {"client": "Jackson Township Municpal ", "computer": "RENEE-MILLER23", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 29.4, "actual_unit": "GB"}, {"client": "Jerry Hanna, Esq. ", "computer": "JERRY-2020", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 39.3, "actual_unit": "GB"}, {"client": "Joseph Weismeth Esq", "computer": "SERVER", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 76.2, "actual_unit": "GB"}, {"client": "LTS Homes ", "computer": "LTS-SVR02", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 1.9, "actual_unit": "TB"}, {"client": "LTS Homes ", "computer": "ROBERT-WESELOH", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 167, "actual_unit": "GB"}, {"client": "LTS Homes ", "computer": "BFISHER-2020", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 214.8, "actual_unit": "GB"}, {"client": "LTS Homes ", "computer": "LAWRY2020-PC", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 198.1, "actual_unit": "GB"}, {"client": "Lake Adventure ", "computer": "CHERYL-PC", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 44, "actual_unit": "GB"}, {"client": "Lake Adventure ", "computer": "SECURITY-23", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": "??", "actual_unit": "GB"}, {"client": "Lake Adventure ", "computer": "LASAGE-PC", "device_type": "Workstation", "product": "", "planned_size": "", "planned_unit": "GB", "actual_size": 132.3, "actual_unit": "GB"}, {"client": "Lake Adventure ", "computer": "LAKE-DC", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 778.3, "actual_unit": "TB"}, {"client": "Laubach Family Chiropractic ", "computer": "LAUBACH-DC", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 398.5, "actual_unit": "GB"}, {"client": "Margie and Joseph Conahan", "computer": "MARGIE22-LTP", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 46.5, "actual_unit": "GB"}, {"client": "Mary and Joe Hayden ", "computer": "MARY22-PC", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 135.7, "actual_unit": "GB"}, {"client": "Michael Gonsky", "computer": "GONSKY-SVR02", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 159, "actual_unit": "GB"}, {"client": "Michael Gonsky", "computer": "ENDO-02-2018", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 101.6, "actual_unit": "GB"}, {"client": "Michael Gonsky", "computer": "ENDO-01-2018", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 134.8, "actual_unit": "GB"}, {"client": "Michael Gonsky", "computer": "WRKST1-2018", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 82.4, "actual_unit": "GB"}, {"client": "Michael Gonsky", "computer": "WRKST-05-2018", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 129.7, "actual_unit": "GB"}, {"client": "Michael Gonsky", "computer": "WRKST-03-2018", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": "", "actual_unit": "MB"}, {"client": "Michael Gonsky", "computer": "WKRST2-2018", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 90.3, "actual_unit": "GB"}, {"client": "Michael Gonsky", "computer": "ENDO3-PC", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 76.2, "actual_unit": "GB"}, {"client": "Michael Gonsky", "computer": "WRKST-04", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 89.1, "actual_unit": "GB"}, {"client": "Michael Gonsky", "computer": "FRONTDESK-2024", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 51.6, "actual_unit": "GB"}, {"client": "Michael Gonsky", "computer": "GONSKYSVR", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 543.9, "actual_unit": "GB"}, {"client": "Montage Enterprise ", "computer": "MONTAGE-DC", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 456.4, "actual_unit": "GB"}, {"client": "Moritz Embroidery ", "computer": "MORITZ-DC", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 3.6, "actual_unit": "TB"}, {"client": "Moritz Embroidery ", "computer": "BRIAN-PC", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 367.5, "actual_unit": "GB"}, {"client": "Moritz Embroidery ", "computer": "MORITZ-SHOP", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 6.2, "actual_unit": "GB"}, {"client": "Moritz Embroidery ", "computer": "LIZ", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 166.9, "actual_unit": "GB"}, {"client": "Mt. Pocono Self Storage", "computer": "MPSS", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 17.2, "actual_unit": "GB"}, {"client": "Nedra Matteucci Galley", "computer": "MSGSVR", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 2, "actual_unit": "TB"}, {"client": "North Pocono Self Storage ", "computer": "DESKTOP-D53DUO0", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 101.7, "actual_unit": "GB"}, {"client": "Office Court - Santa Fe ", "computer": "IP-C0A87D4D", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 30.8, "actual_unit": "GB"}, {"client": "PMAR ", "computer": "NICOLE-LENOVO", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 2.1, "actual_unit": "GB"}, {"client": "PMAR ", "computer": "PMAR-MAIN", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 224.3, "actual_unit": "GB"}, {"client": "PMAR ", "computer": "PMAR-DC", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 159.4, "actual_unit": "GB"}, {"client": "PMAR ", "computer": "MEGAN-PC", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 34.5, "actual_unit": "GB"}, {"client": "PMAR ", "computer": "FRONTDESK-1", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 80.7, "actual_unit": "GB"}, {"client": "PMAR ", "computer": "FRONTDESK-LTP", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 151.2, "actual_unit": "GB"}, {"client": "PMAR ", "computer": "DAWN-LTP", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 77.8, "actual_unit": "GB"}, {"client": "PMAR ", "computer": "CLASSROOM-LPT", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 64, "actual_unit": "GB"}, {"client": "PMAR ", "computer": "BOOKKEEPER", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 13.7, "actual_unit": "GB"}, {"client": "PMAR ", "computer": "LAPTOP-BIDRDN4U", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 308.8, "actual_unit": "MB"}, {"client": "PMAR ", "computer": "RECEPTION", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 3.9, "actual_unit": "GB"}, {"client": "PMAR ", "computer": "BOOKS-2023", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 9.1, "actual_unit": "GB"}, {"client": "Pajarito Scientific Company ", "computer": "PSCSVR01", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 2.6, "actual_unit": "TB"}, {"client": "Paramount Business Developmen", "computer": "RICK-2022", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 150.9, "actual_unit": "GB"}, {"client": "Penn Estates POA Operating ", "computer": "PEPOA-DC*", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 2.6, "actual_unit": "TB"}, {"client": "Penn Estates POA Operating ", "computer": "PHAASE-23", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 107.1, "actual_unit": "GB"}, {"client": "Penn Estates POA Operating ", "computer": "TORYAK-22", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 233.8, "actual_unit": "GB"}, {"client": "Penn Estates POA Operating ", "computer": "PHYLLIS-CAMS", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 328, "actual_unit": "MB"}, {"client": "Penn Estates POA Operating ", "computer": "PHYLIS-CAMS", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 3.2, "actual_unit": "GB"}, {"client": "Pocono Adult Pediatric Medical Group ", "computer": "PAPMGSVR02", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 1.4, "actual_unit": "TB"}, {"client": "Pocono Mountain Dairies ", "computer": "PMD-DC", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 2.1, "actual_unit": "TB"}, {"client": "Pocono Mountain Dairies ", "computer": "PMD-RAMS", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 222, "actual_unit": "GB"}, {"client": "Pocono Mountain Dairies ", "computer": "PMD-WEB", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 165.6, "actual_unit": "GB"}, {"client": "Pocono Mountain Dairies ", "computer": "MIKEK-2020", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 2.2, "actual_unit": "GB"}, {"client": "Pocono Mountain Dairies ", "computer": "DENICE-PC-2020", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 721, "actual_unit": "MB"}, {"client": "Pocono Mountain Dairies ", "computer": "SHERRI-2024", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 454.1, "actual_unit": "MB"}, {"client": "Pocono Mountain Dairies ", "computer": "MARY-PC-2020", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 1.9, "actual_unit": "GB"}, {"client": "Pocono Mountain Dairies ", "computer": "ANDREA-PC-2020", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 397.1, "actual_unit": "MB"}, {"client": "Pocono Mountain Public Library ", "computer": "PMPLSVR", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 1600, "actual_unit": "TB"}, {"client": "Pocono Mountain Public Library ", "computer": "ANN-PC", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 26.8, "actual_unit": "GB"}, {"client": "Pocono Pool and Spa ", "computer": "PPS-DC", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 1800, "actual_unit": "TB"}, {"client": "Pocono Property Abstract ", "computer": "PPA-DC", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 546.2, "actual_unit": "GB"}, {"client": "Pocono Services for Families and Children ", "computer": "ESTBG-SERVER", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 725.1, "actual_unit": "GB"}, {"client": "Pocono Services for Families and Children ", "computer": "TAMI-LTP", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 164.1, "actual_unit": "GB"}, {"client": "Pocono Services for Families and Children ", "computer": "TOBY-SERVER", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 824, "actual_unit": "GB"}, {"client": "Professional Home Health Care ", "computer": "PHHCSVR02", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 687.3, "actual_unit": "GB"}, {"client": "R.J. Groner ", "computer": "RJGSVR01", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 173.5, "actual_unit": "GB"}, {"client": "R.J. Groner ", "computer": "GRONERSVR", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 1800, "actual_unit": "TB"}, {"client": "R.J. Groner ", "computer": "BOOKKEEPING-202", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 149.6, "actual_unit": "GB"}, {"client": "R.J. Groner ", "computer": "MIKE-2020", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 238.7, "actual_unit": "GB"}, {"client": "R.J. Groner ", "computer": "ACCOUNTING3", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 128.8, "actual_unit": "GB"}, {"client": "R.J. Groner ", "computer": "KAREN-2020", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 157.6, "actual_unit": "GB"}, {"client": "R.J. Groner ", "computer": "SERVICE3-2020", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 6.1, "actual_unit": "GB"}, {"client": "R.J. Groner ", "computer": "SALES3-2022", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 6.3, "actual_unit": "GB"}, {"client": "R.J. Groner ", "computer": "NCOCOT-PC", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 76.2, "actual_unit": "GB"}, {"client": "R.J. Groner ", "computer": "SERVICE-4-2020", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 495.4, "actual_unit": "MB"}, {"client": "RKR Hess Associates", "computer": "RKR-BDC", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 6.1, "actual_unit": "TB"}, {"client": "Riley and Company, Inc ", "computer": "PAYROLL-PC", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 168.4, "actual_unit": "GB"}, {"client": "Riley and Company, Inc ", "computer": "MARY-2021", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 249.8, "actual_unit": "GB"}, {"client": "Riley and Company, Inc ", "computer": "SCOTT23-LTP", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 206.7, "actual_unit": "GB"}, {"client": "Riley and Company, Inc ", "computer": "JAYRILEY", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 126.4, "actual_unit": "GB"}, {"client": "Riley and Company, Inc ", "computer": "PAUL-21", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 116.8, "actual_unit": "GB"}, {"client": "Safe Monroe ", "computer": "SafeMonroe-Dc", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 1900, "actual_unit": "GB"}, {"client": "Safe Monroe ", "computer": "RECEPTION-2022", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 45.8, "actual_unit": "GB"}, {"client": "Safe Monroe ", "computer": "1L1-T07-I7", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 1.4, "actual_unit": "GB"}, {"client": "Safe Monroe ", "computer": "FINANCE-2021", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 300.9, "actual_unit": "MB"}, {"client": "Safe Monroe ", "computer": "LEGAL-PC", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 674.3, "actual_unit": "MB"}, {"client": "Safe Monroe ", "computer": "CHRISTIE-2024", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 1100, "actual_unit": "MB"}, {"client": "Safe Monroe ", "computer": "SHELTERMGR-21", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 414.2, "actual_unit": "MB"}, {"client": "Safe Monroe ", "computer": "LPERERSON-21", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 7, "actual_unit": "GB"}, {"client": "Santa Fe Animal Hospital ", "computer": "MORRISV4", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 359.3, "actual_unit": "GB"}, {"client": "Santa Fe Animal Hospital ", "computer": "DGURLEY", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 130.8, "actual_unit": "GB"}, {"client": "Santa Fe Animal Hospital ", "computer": "GO-BRUINS", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 128.7, "actual_unit": "GB"}, {"client": "Santa Fe Animal Hospital ", "computer": "JENNIFERK", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 107.4, "actual_unit": "GB"}, {"client": "Santa Fe Kia", "computer": "DESKTOP-PGHOETM", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 7.1, "actual_unit": "GB"}, {"client": "Santa Fe Kia", "computer": "SFK-PARTS-MGR", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 270.9, "actual_unit": "MB"}, {"client": "Santa Fe Kia", "computer": "SFK-SERVICE-MGR", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 773, "actual_unit": "MB"}, {"client": "Santa Fe Kia", "computer": "SASHAFLETCHB83E", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 1.3, "actual_unit": "GB"}, {"client": "Santa Fe Kia", "computer": "SFK-MF-LT", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 388.8, "actual_unit": "MB"}, {"client": "Serenite At Camel Back ", "computer": "SERVER-DC", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 565.1, "actual_unit": "GB"}, {"client": "Serenite At Camel Back", "computer": "SERVER-RDS", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 1000, "actual_unit": "GB"}, {"client": "Shawnee Abstract ", "computer": "DESKTOP-78U6HK9", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 114, "actual_unit": "GB"}, {"client": "Shawnee Abstract ", "computer": "DESKTOP-839SEJU", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 105.5, "actual_unit": "GB"}, {"client": "Shawnee Abstract ", "computer": "LAPTOP-97S4305L", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 106.2, "actual_unit": "GB"}, {"client": "Sundance Networks, Inc. ", "computer": "SUNDANCE-SVR", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": "", "actual_unit": "GB"}, {"client": "Sundance Networks, Inc. ", "computer": "SNI-SERVER", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 576.5, "actual_unit": "GB"}, {"client": "Sundance Networks, Inc. ", "computer": "FREEL2-PC", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 234.5, "actual_unit": "GB"}, {"client": "Todd Kandl DMD ", "computer": "KANDLSVR", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 878.6, "actual_unit": "GB"}, {"client": "Tolinos Fuel Service ", "computer": "CARL-2020", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 87.1, "actual_unit": "GB"}, {"client": "Tolinos Fuel Service ", "computer": "SALENA-22", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 49.7, "actual_unit": "GB"}, {"client": "Tolinos Fuel Service ", "computer": "TOLINOS-DC", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 352.6, "actual_unit": "GB"}, {"client": "Tolinos Fuel Service ", "computer": "MGR-PC", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 146, "actual_unit": "GB"}, {"client": "Weseloh Carney Co.", "computer": "DANCARNEY-PC", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 83.7, "actual_unit": "GB"}, {"client": "Weseloh Carney Co.", "computer": "BRAD-2022", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 97, "actual_unit": "GB"}, {"client": "Weseloh Carney Co.", "computer": "SONDRA22-PC", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 30.8, "actual_unit": "GB"}, {"client": "Weseloh Carney Co.", "computer": "JESSICA-2022", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 254.1, "actual_unit": "GB"}, {"client": "Weseloh Carney Co.", "computer": "EMILY-PC", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 345.3, "actual_unit": "GB"}, {"client": "Weseloh Carney Co.", "computer": "DEBBIE-2024", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 131.6, "actual_unit": "GB"}, {"client": "Weseloh Carney Co.", "computer": "DANNY-2020", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 270.2, "actual_unit": "GB"}, {"client": "Weseloh Carney Co.", "computer": "CHRISTINE-WS", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 280.1, "actual_unit": "GB"}, {"client": "Weseloh Carney Co.", "computer": "JOHN-2022", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 166.5, "actual_unit": "GB"}, {"client": "Weseloh Carney Co.", "computer": "CARNEY-SERVER", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 1.8, "actual_unit": "TB"}, {"client": "Weseloh Carney Co.", "computer": "CARNEY-ESERVER", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 76.9, "actual_unit": "GB"}, {"client": "Western Pocono Community Library", "computer": "WPCLSVR", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 311.7, "actual_unit": "GB"}, {"client": "Western Pocono Community Library", "computer": "DIRECTOR-PC", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 156.6, "actual_unit": "GB"}, {"client": "Western Pocono Community Library", "computer": "WPCL2", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 157.8, "actual_unit": "GB"}, {"client": "William H. Clark Funeral Home", "computer": "WC-SERVER-25", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 68.9, "actual_unit": "GB"}, {"client": "William H. Clark Funeral Home", "computer": "WC03-25", "device_type": "Workstation", "product": "Documents Only", "planned_size": "", "planned_unit": "GB", "actual_size": 216.4, "actual_unit": "GB"}, {"client": "Young and Haros ", "computer": "PCLAWSVR01", "device_type": "Workstation", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 152.7, "actual_unit": "GB"}, {"client": "Zlotnick and Sandoval PC ", "computer": "ZLS01", "device_type": "Server", "product": "All In 90 Day", "planned_size": "", "planned_unit": "GB", "actual_size": 1.8, "actual_unit": "TB"}];
+
+/*** Planned size options ***/
+const plannedOptionsHTML = `<option value="100">100 GB</option>
+<option value="200">200 GB</option>
+<option value="300">300 GB</option>
+<option value="400">400 GB</option>
+<option value="500">500 GB</option>
+<option value="600">600 GB</option>
+<option value="700">700 GB</option>
+<option value="800">800 GB</option>
+<option value="900">900 GB</option>
+<option value="1000">1.0 TB (1000 GB)</option>
+<option value="1100">1.1 TB (1100 GB)</option>
+<option value="1200">1.2 TB (1200 GB)</option>
+<option value="1300">1.3 TB (1300 GB)</option>
+<option value="1400">1.4 TB (1400 GB)</option>
+<option value="1500">1.5 TB (1500 GB)</option>
+<option value="1600">1.6 TB (1600 GB)</option>
+<option value="1700">1.7 TB (1700 GB)</option>
+<option value="1800">1.8 TB (1800 GB)</option>
+<option value="1900">1.9 TB (1900 GB)</option>
+<option value="2000">2.0 TB (2000 GB)</option>
+<option value="2100">2.1 TB (2100 GB)</option>
+<option value="2200">2.2 TB (2200 GB)</option>
+<option value="2300">2.3 TB (2300 GB)</option>
+<option value="2400">2.4 TB (2400 GB)</option>
+<option value="2500">2.5 TB (2500 GB)</option>
+<option value="2600">2.6 TB (2600 GB)</option>
+<option value="2700">2.7 TB (2700 GB)</option>
+<option value="2800">2.8 TB (2800 GB)</option>
+<option value="2900">2.9 TB (2900 GB)</option>
+<option value="3000">3.0 TB (3000 GB)</option>
+<option value="3100">3.1 TB (3100 GB)</option>
+<option value="3200">3.2 TB (3200 GB)</option>
+<option value="3250">3.25 TB (3250 GB)</option>
+<option value="3300">3.3 TB (3300 GB)</option>
+<option value="3400">3.4 TB (3400 GB)</option>
+<option value="3500">3.5 TB (3500 GB)</option>
+<option value="3600">3.6 TB (3600 GB)</option>
+<option value="3700">3.7 TB (3700 GB)</option>
+<option value="3750">3.75 TB (3750 GB)</option>
+<option value="3800">3.8 TB (3800 GB)</option>
+<option value="3900">3.9 TB (3900 GB)</option>
+<option value="4000">4.0 TB (4000 GB)</option>
+<option value="4100">4.1 TB (4100 GB)</option>
+<option value="4200">4.2 TB (4200 GB)</option>
+<option value="4250">4.25 TB (4250 GB)</option>
+<option value="4300">4.3 TB (4300 GB)</option>
+<option value="4400">4.4 TB (4400 GB)</option>
+<option value="4500">4.5 TB (4500 GB)</option>
+<option value="4600">4.6 TB (4600 GB)</option>
+<option value="4700">4.7 TB (4700 GB)</option>
+<option value="4800">4.8 TB (4800 GB)</option>
+<option value="4900">4.9 TB (4900 GB)</option>
+<option value="5000">5.0 TB (5000 GB)</option>`;
+
+/*** Pricing guide from PNG ***/
+const PRICING = {
+  Workstation: [
+    [100, 20], [200, 30], [300, 40], [400, 50], [500, 60], [600, 70], [700, 80], [800, 90], [900, 100],
+    [1000, 110], [1250, 135], [1500, 160], [1750, 185], [2000, 210]
+  ],
+  Server: [
+    [500, 40], [600, 50], [700, 60], [800, 70], [900, 80],
+    [1000, 90], [1250, 115], [1500, 140], [1750, 165], [2000, 190],
+    [2250, 215], [2500, 240], [2750, 265], [3000, 290],
+    [3250, 305], [3500, 320], [3750, 335], [4000, 350], [4250, 375], [4500, 400], [5000, 415]
+  ]
+};
+
+/*** State ***/
+let rows = [];
+
+/*** Utils ***/
+function toGB(sizeStr, unit) {
+  const n = parseFloat(sizeStr);
+  if (!isFinite(n)) return 0;
+  const u = (unit || "GB").toUpperCase();
+  if (u === "TB") return n * 1000;
+  if (u === "MB") return n / 1000;
+  return n; // GB
+}
+
+function tierCost(category, actualGB) {
+  const tiers = PRICING[category];
+  if (!tiers) return null;
+  const minGB = category === "Server" ? 500 : 100;
+  const gb = Math.max(actualGB, minGB);
+  for (const [cap, cost] of tiers) {
+    if (gb <= cap) return cost;
+  }
+  return tiers[tiers.length - 1][1];
+}
+
+function computeAlert(plannedGB, actualGB) {
+  if (!plannedGB || !actualGB) return { text: "", cls: "" };
+  if (actualGB > plannedGB) return { text: "⚠ Over planned", cls: "alert_over" };
+  return { text: "OK", cls: "alert_ok" };
+}
+
+function categoryFor(deviceType) {
+  return (deviceType === "Server") ? "Server" : "Workstation";
+}
+
+function debounce(fn, ms=600) {
+  let t;
+  const deb = (...args) => {
+    clearTimeout(t);
+    t = setTimeout(() => fn(...args), ms);
+  };
+  deb.flush = () => {
+    clearTimeout(t);
+    fn();
+  };
+  return deb;
+}
+
+/*** Rendering ***/
+function rowTemplate(data={}) {
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td><input type="text" class="client" value="${data.client ?? ''}"></td>
+    <td><input type="text" class="computer" value="${data.computer ?? ''}"></td>
+    <td>
+      <select class="device_type">
+        <option value=""></option>
+        <option value="Workstation">Workstation</option>
+        <option value="Laptop">Laptop</option>
+        <option value="Server">Server</option>
+      </select>
+    </td>
+    <td>
+      <select class="product">
+        <option value=""></option>
+        <option value="Documents Only">Documents Only</option>
+        <option value="All In 90 Day">All In 90 Day</option>
+      </select>
+    </td>
+    <td>
+      <select class="planned_size">
+        <option value=""></option>
+        ${plannedOptionsHTML}
+      </select>
+    </td>
+    <td>
+      <select class="planned_unit unit">
+        <option value="GB">GB</option>
+        <option value="TB">TB</option>
+      </select>
+    </td>
+    <td><input type="number" step="any" class="actual_size num" value="${data.actual_size ?? ''}"></td>
+    <td>
+      <select class="actual_unit unit">
+        <option value="MB">MB</option>
+        <option value="GB">GB</option>
+        <option value="TB">TB</option>
+      </select>
+    </td>
+    <td class="alert_cell"><span class="alert_badge" aria-live="polite"></span></td>
+    <td class="cost_cell"><span class="cost_badge" aria-live="polite"></span></td>
+    <td class="actions">
+      <button class="row-remove" title="Remove this row">Remove</button>
+    </td>
+  `;
+
+  tr.querySelector('.device_type').value = data.device_type ?? '';
+  tr.querySelector('.product').value = data.product ?? '';
+  tr.querySelector('.planned_size').value = data.planned_size ?? '';
+  tr.querySelector('.planned_unit').value = data.planned_unit ?? 'GB';
+  tr.querySelector('.actual_unit').value = data.actual_unit ?? 'GB';
+
+  tr.querySelector('.row-remove').addEventListener('click', () => {
+    tr.remove();
+    autosave();
+  });
+
+  tr.querySelectorAll('input, select').forEach(el => {
+    el.addEventListener('input', () => { recomputeRow(tr); autosave(); });
+    el.addEventListener('change', () => { recomputeRow(tr); autosave(); });
+  });
+
+  recomputeRow(tr);
+  return tr;
+}
+
+function setRows(newRows) {
+  rows = Array.isArray(newRows) ? newRows : [];
+  const body = document.querySelector('#backupTable tbody');
+  body.innerHTML = '';
+  rows.forEach(r => body.appendChild(rowTemplate(r)));
+}
+
+function getRows() {
+  const body = document.querySelector('#backupTable tbody');
+  return [...body.querySelectorAll('tr')].map(tr => {
+    const g = sel => tr.querySelector(sel);
+    return {
+      client: g('.client').value.trim(),
+      computer: g('.computer').value.trim(),
+      device_type: g('.device_type').value,
+      product: g('.product').value,
+      planned_size: g('.planned_size').value,
+      planned_unit: g('.planned_unit').value,
+      actual_size: g('.actual_size').value,
+      actual_unit: g('.actual_unit').value
+    };
+  });
+}
+
+function recomputeRow(tr) {
+  const g = sel => tr.querySelector(sel);
+  const plannedSize = g('.planned_size').value;
+  const plannedUnit = g('.planned_unit').value;
+  const actualSize = g('.actual_size').value;
+  const actualUnit = g('.actual_unit').value;
+  const deviceType = g('.device_type').value;
+
+  const plannedGB = toGB(plannedSize, plannedUnit);
+  const actualGB = toGB(actualSize, actualUnit);
+
+  const badge = g('.alert_badge');
+  const alert = computeAlert(plannedGB, actualGB);
+  badge.textContent = alert.text;
+  badge.className = 'alert_badge ' + alert.cls;
+
+  const cat = categoryFor(deviceType);
+  const cost = tierCost(cat, actualGB);
+  const costBadge = g('.cost_badge');
+  costBadge.textContent = cost != null ? '$' + cost.toFixed(0) : '';
+  costBadge.title = cat + ' tier based on ' + (actualGB || 0).toFixed(1) + ' GB';
+}
+
+function sortRows(compareFn) {
+  const cur = getRows();
+  cur.sort(compareFn);
+  setRows(cur);
+}
+
+function norm(v) {
+  return (v ?? '').toString().toLowerCase();
+}
+
+/*** Local + Sheet persistence ***/
+function saveToLocal() {
+  localStorage.setItem('clientBackupPlannerRows', JSON.stringify(getRows()));
+}
+
+function loadFromLocal() {
+  const raw = localStorage.getItem('clientBackupPlannerRows');
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch { return null; }
+}
+
+async function saveToSheet(payload) {
+  const url = `${SHEET_API_URL}?action=save&key=${encodeURIComponent(SHEET_KEY)}&token=${encodeURIComponent(SHEET_TOKEN)}`;
+  try {
+    await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      mode: "no-cors"
+    });
+  } catch (e) {
+    console.warn("Sheet save failed", e);
+  }
+}
+
+async function loadFromSheet() {
+  const url = `${SHEET_API_URL}?action=load&key=${encodeURIComponent(SHEET_KEY)}&token=${encodeURIComponent(SHEET_TOKEN)}`;
+  try {
+    const res = await fetch(url);
+    const json = await res.json();
+    if (json && json.ok) return json.data;
+  } catch (e) {
+    console.warn("Sheet load failed (likely CORS). Falling back to localStorage.", e);
+  }
+  return null;
+}
+
+const autosave = debounce(async () => {
+  const current = getRows();
+  saveToLocal();
+  await saveToSheet({ rows: current, updatedAt: new Date().toISOString() });
+}, 800);
+
+/*** Pricing guide render ***/
+function renderPricingTables() {
+  const wsBody = document.getElementById('pricingWorkstations');
+  const svBody = document.getElementById('pricingServers');
+  const makeRow = (label, cost) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td style="padding-right:12px;">${label}</td><td style="text-align:right;">$${cost}</td>`;
+    return tr;
+  };
+  wsBody.innerHTML = '';
+  PRICING.Workstation.forEach(([gb,cost]) => {
+    const label = gb >= 1000 ? (gb/1000).toFixed(gb%1000?2:0) + ' TB' : gb + ' GB';
+    wsBody.appendChild(makeRow(label, cost));
+  });
+  svBody.innerHTML = '';
+  PRICING.Server.forEach(([gb,cost]) => {
+    const label = gb >= 1000 ? (gb/1000).toFixed(gb%1000?2:0) + ' TB' : gb + ' GB';
+    svBody.appendChild(makeRow(label, cost));
+  });
+}
+
+/*** Init ***/
+async function init() {
+  renderPricingTables();
+  const sheetData = await loadFromSheet();
+  if (sheetData && sheetData.rows) {
+    setRows(sheetData.rows);
+  } else {
+    const local = loadFromLocal();
+    setRows(local && local.length ? local : INITIAL_ROWS);
+  }
+}
+
+document.getElementById('addRowBtn').addEventListener('click', () => {
+  document.querySelector('#backupTable tbody').appendChild(rowTemplate({}));
+  autosave();
+});
+
+document.getElementById('saveBtn').addEventListener('click', async () => {
+  autosave.flush();
+  saveToLocal();
+  await saveToSheet({ rows: getRows(), updatedAt: new Date().toISOString() });
+  alert('Saved.');
+});
+
+document.getElementById('downloadBtn').addEventListener('click', () => {
+  const rows = getRows();
+  const clone = document.documentElement.cloneNode(true);
+  const script = clone.querySelector('script');
+  script.textContent = script.textContent.replace(/const INITIAL_ROWS = \[.*?\];/s, 'const INITIAL_ROWS = ' + JSON.stringify(rows, null, 2) + ';');
+  const blob = new Blob(['<!DOCTYPE html>\n' + clone.outerHTML], {type:'text/html'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'Client_Backup_Planner.html';
+  a.click();
+  URL.revokeObjectURL(url);
+});
+
+// Sorting
+document.getElementById('sortClientAscBtn').addEventListener('click', () => sortRows((a,b)=> norm(a.client).localeCompare(norm(b.client))));
+document.getElementById('sortClientDescBtn').addEventListener('click', () => sortRows((a,b)=> norm(b.client).localeCompare(norm(a.client))));
+document.getElementById('sortComputerBtn').addEventListener('click', () => sortRows((a,b)=> norm(a.computer).localeCompare(norm(b.computer))));
+document.getElementById('sortDeviceTypeBtn').addEventListener('click', () => sortRows((a,b)=> norm(a.device_type).localeCompare(norm(b.device_type))));
+document.getElementById('sortProductBtn').addEventListener('click', () => sortRows((a,b)=> norm(a.product).localeCompare(norm(b.product))));
+document.getElementById('sortActualSizeBtn').addEventListener('click', () => sortRows((a,b)=> toGB(a.actual_size,a.actual_unit) - toGB(b.actual_size,b.actual_unit)));
+
+init();
+</script>
+</body>
+</html>
