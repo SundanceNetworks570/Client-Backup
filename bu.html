@@ -1,0 +1,877 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Client Backup Planner</title>
+<style>
+  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 24px; color:#111; background: linear-gradient(180deg, #eaf4ff 0%, #f5faff 55%, #ffffff 100%); min-height: 100vh;}
+  h1 { font-size: 1.6rem; margin-bottom: 0.25rem;}
+  .sub { color:#555; margin-bottom: 1rem;}
+  .toolbar { display:flex; gap:8px; flex-wrap:wrap; margin: 12px 0 16px; align-items:center;}
+  button { border:1px solid #ccc; background:#f7f7f7; padding:8px 12px; border-radius:8px; cursor:pointer;}
+  button:hover { background:#eee;}
+  table { width:100%; border-collapse: collapse; }
+  th, td { border:1px solid #e3e3e3; padding:6px; vertical-align: middle;}
+  th { background:#fafafa; text-align:left; font-weight:600; position: sticky; top:0; z-index:1;}
+  input[type="text"], input[type="number"], select {
+    width: 100%; box-sizing:border-box; padding:6px; border:1px solid #d0d0d0; border-radius:6px; background:white;
+  }
+  .num { text-align:right; }
+  .actions { display:flex; gap:6px; }
+  .unit { width: 80px; }
+  .row-remove { background:#fff0f0; border-color:#f2b4b4;}
+  .alert_cell, .cost_cell { text-align:center; }
+  .alert_badge {
+    display:inline-block; font-weight:600; font-size:12px;
+    padding:4px 8px; border-radius:999px;
+    border:1px solid transparent;
+  }
+  .alert_ok { background:#e9f7ef; color:#1e7e34; border-color:#bfe5cc; }
+  .alert_over { background:#fff2f2; color:#b00020; border-color:#f5c0c0; }
+  .cost_badge {
+    display:inline-block; font-weight:700; font-size:12px;
+    padding:4px 8px; border-radius:6px; background:#f0f6ff; border:1px solid #cfe1ff; color:#0b3d91;
+  }
+  details.pricing, details.panel { margin-top: 10px; padding:10px; border:1px dashed #ddd; border-radius:8px; background:#fff;}
+  details.pricing summary, details.panel summary { cursor:pointer; font-weight:600; }
+  details.pricing table { width:auto; margin-top:8px;}
+
+  /* ---- Reporting styles ---- */
+  .report-card {
+    border:1px solid #e6e9ee;
+    border-radius:10px;
+    padding:10px;
+    background:#fff;
+  }
+  .report-group { margin:10px 0 18px; }
+  .report-group-title { font-weight:700; font-size:14px; margin-bottom:6px; }
+  .report-meta { font-size:11px; color:#666; margin-top:4px; text-align:right; }
+  .right { text-align:right; }
+</style>
+</head>
+<body>
+<h1>Client Backup Planner</h1>
+<div class="sub">Track backup devices, planned vs. actual data sizes, and monthly cost per machine.</div>
+
+<div class="toolbar">
+  <button id="addRowBtn">Add Row</button>
+  <button id="saveBtn">Save</button>
+  <button id="downloadBtn">Download HTML (with data)</button>
+  <button id="reportBtn" title="Generate PDF report of alerts">Generate Alerts Report (PDF)</button>
+  <button id="changeLogBtn" title="View last 30 days of changes">Change Log</button>
+
+  <span style="margin-left:16px; font-weight:600; color:#333;">Filter Client:</span>
+  <select id="clientFilterSelect" title="Show only devices for selected client">
+    <option value="">All Clients</option>
+  </select>
+  <button id="clearClientFilterBtn" title="Clear client filter">Clear</button>
+  <span id="clientTotals"
+        style="margin-left:12px; padding:6px 10px; border:1px solid #ddd; border-radius:8px; background:#f7f9fb; font-weight:600; font-size:12px; color:#222;">
+    Totals: —
+  </span>
+
+  <span style="margin-left:8px; font-weight:600; color:#333;">Sort:</span>
+  <button id="sortAlertBtn" title="Sort by Alerts">Alerts ⇅</button>
+  <button id="sortClientAscBtn" title="Sort by Client Name A → Z">Client A–Z</button>
+  <button id="sortClientDescBtn" title="Sort by Client Name Z → A">Client Z–A</button>
+  <button id="sortComputerBtn" title="Sort by Computer Name">Computer ⇅</button>
+  <button id="sortDeviceTypeBtn" title="Sort by Device Type">Device Type ⇅</button>
+  <button id="sortProductBtn" title="Sort by Product Name">Product ⇅</button>
+  <button id="sortActualSizeBtn" title="Sort by Actual Data Size">Actual Size ⇅</button>
+</div>
+
+<!-- ✅ NEW REPORTING SECTION -->
+<details class="panel" id="reportingSection" open>
+  <summary>Reporting</summary>
+
+  <div class="toolbar" style="margin-top:10px;">
+    <label style="font-weight:600;">Client:</label>
+    <select id="reportClientSelect" style="max-width:260px;">
+      <option value="">All Clients</option>
+    </select>
+
+    <label style="font-weight:600; margin-left:10px;">Group by:</label>
+    <select id="reportGroupSelect" style="max-width:180px;">
+      <option value="client">Client</option>
+      <option value="none">No grouping</option>
+    </select>
+
+    <button id="runReportBtn">Run Report</button>
+    <button id="printReportBtn" disabled>Print / Save PDF</button>
+    <button id="csvReportBtn" disabled>Export CSV</button>
+  </div>
+
+  <div id="reportOutput" style="margin-top:12px;"></div>
+</details>
+
+<div style="overflow:auto; max-height:70vh; border:1px solid #eee; border-radius:10px; margin-top:10px;">
+<table id="backupTable">
+  <thead>
+    <tr>
+      <th style="min-width:160px;">Client Name</th>
+      <th style="min-width:120px;">Billing</th>
+      <th style="min-width:170px;">Computer Name</th>
+      <th style="min-width:130px;">Device Type</th>
+      <th style="min-width:160px;">Product Name</th>
+      <th style="min-width:190px;">Planned Data Size</th>
+      <th style="min-width:90px;">Planned Unit</th>
+      <th style="min-width:160px;">Actual Data Size</th>
+      <th style="min-width:90px;">Actual Unit</th>
+      <th style="min-width:140px;">Alert</th>
+      <th style="min-width:120px;">Cost / mo</th>
+      <th style="min-width:110px;">Actions</th>
+    </tr>
+  </thead>
+  <tbody></tbody>
+</table>
+</div>
+
+<details class="pricing">
+  <summary>Backup Service Monthly Pricing Guide (reference)</summary>
+  <div style="display:flex; gap:30px; flex-wrap:wrap;">
+    <div>
+      <h3 style="margin:6px 0;">Workstations</h3>
+      <table>
+        <tbody id="pricingWorkstations"></tbody>
+      </table>
+    </div>
+    <div>
+      <h3 style="margin:6px 0;">Servers</h3>
+      <table>
+        <tbody id="pricingServers"></tbody>
+      </table>
+    </div>
+  </div>
+  <div style="margin-top:6px; font-size:12px; color:#555;">
+    Workstation minimum is 100GB & Server minimum is 500GB. Prices are per machine; totals cannot be combined.
+  </div>
+</details>
+
+
+<!-- Change Log Modal -->
+<div id="changeLogModal" style="
+  position:fixed; inset:0; background:rgba(0,0,0,0.35);
+  display:none; align-items:center; justify-content:center; padding:20px; z-index:9999;">
+  <div style="
+    width:min(900px, 96vw); max-height:85vh; overflow:auto;
+    background:#fff; border-radius:14px; box-shadow:0 10px 30px rgba(0,0,0,0.2);
+    padding:16px 16px 8px;">
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
+      <h2 style="margin:0; font-size:1.2rem;">Change Log (last 30 days)</h2>
+      <div style="display:flex; gap:8px;">
+        <button id="changeLogExportBtn" title="Copy log to clipboard">Copy</button>
+        <button id="changeLogCloseBtn">Close</button>
+      </div>
+    </div>
+    <div id="changeLogBody" style="margin-top:12px; font-size:14px;"></div>
+  </div>
+</div>
+
+<script>
+/*** Backend (Google Sheet Web App) ***/
+const SHEET_API_URL = "https://script.google.com/macros/s/AKfycbzj6b-hjPsaZWoEfUBkEV90WZU8gqOD1ZfSLXx5bktP912kiS8-5J6jPEpwuqvqLIk/exec";
+const SHEET_TOKEN = "backup-planner-9f2a7c!";
+const SHEET_KEY = "default";
+
+/*** Initial data ***/
+const INITIAL_ROWS = [{"client": "AFTLOL", "computer": "MACBOOK-AIR-2", "device_type": "Workstation", "product": "", "planned_size": "", "planned_unit": "GB", "actual_size": 36.6, "actual_unit": "GB"}];
+
+/*** Planned size options ***/
+const plannedOptionsHTML = `<option value="NO_CHARGE">No Charge</option>
+<option value="100">100 GB</option>
+<option value="200">200 GB</option>
+<option value="300">300 GB</option>
+<option value="400">400 GB</option>
+<option value="500">500 GB</option>
+<option value="600">600 GB</option>
+<option value="700">700 GB</option>
+<option value="800">800 GB</option>
+<option value="900">900 GB</option>
+<option value="1000">1.0 TB (1000 GB)</option>
+<option value="1250">1.25 TB (1250 GB)</option>
+<option value="1500">1.5 TB (1500 GB)</option>
+<option value="1750">1.75 TB (1750 GB)</option>
+<option value="2000">2.0 TB (2000 GB)</option>
+<option value="2250">2.25 TB (2250 GB)</option>
+<option value="2500">2.5 TB (2500 GB)</option>
+<option value="2750">2.75 TB (2750 GB)</option>
+<option value="3000">3.0 TB (3000 GB)</option>
+<option value="3250">3.25 TB (3250 GB)</option>
+<option value="3500">3.5 TB (3500 GB)</option>
+<option value="3750">3.75 TB (3750 GB)</option>
+<option value="4000">4.0 TB (4000 GB)</option>
+<option value="4250">4.25 TB (4250 GB)</option>
+<option value="4500">4.5 TB (4500 GB)</option>
+<option value="4750">4.75 TB (4750 GB)</option>
+<option value="5000">5.0 TB (5000 GB)</option>
+<option value="5250">5.25 TB (5250 GB)</option>
+<option value="5500">5.5 TB (5500 GB)</option>
+<option value="5750">5.75 TB (5750 GB)</option>
+<option value="6000">6.0 TB (6000 GB)</option>`;
+
+/*** Pricing guide ***/
+const PRICING = {
+  Workstation: [
+    [100, 25],[200, 38],[300, 50],[400, 63],[500, 75],[600, 84],[700, 96],[800, 108],[900, 120],
+    [1000, 132],[1250, 156],[1500, 180],[1750, 204],[2000, 228],[2250, 252],[2750, 276],[3000, 300],
+    [3250, 324],[3500, 348],[3750, 372],[4000, 396],[4250, 420],[4500, 444],[4750, 468],[5000, 492]
+  ],
+  Laptop: [
+    [100, 25],[200, 38],[300, 50],[400, 63],[500, 75],[600, 84],[700, 96],[800, 108],[900, 120],
+    [1000, 132],[1250, 156],[1500, 180],[1750, 204],[2000, 228],[2250, 252],[2750, 276],[3000, 300],
+    [3250, 324],[3500, 348],[3750, 372],[4000, 396],[4250, 420],[4500, 444],[4750, 468],[5000, 492]
+  ],
+  Server: [
+    [500, 50],[600, 63],[700, 75],[800, 88],[900, 100],[1000, 113],[1250, 138],[1500, 163],[1750, 188],
+    [2000, 213],[2250, 238],[2500, 263],[2750, 288],[3000, 313],[3250, 338],[3500, 363],[3750, 388],
+    [4000, 413],[4250, 438],[4500, 488],[5000, 513],[5250, 538],[5500, 563],[5750, 588],[6000, 613]
+  ]
+};
+
+/*** State ***/
+let rows = [];
+
+/*** Change Log (rest unchanged) ***/
+const CHANGE_LOG_KEY = 'clientBackupPlannerChangeLog';
+const CHANGE_LOG_DAYS = 30;
+function loadChangeLog(){ try { return JSON.parse(localStorage.getItem(CHANGE_LOG_KEY)||'[]'); } catch { return []; } }
+function saveChangeLog(logs){ localStorage.setItem(CHANGE_LOG_KEY, JSON.stringify(logs)); }
+function pruneChangeLog(logs){ const cutoff=Date.now()-CHANGE_LOG_DAYS*24*60*60*1000; return logs.filter(e=>e.ts>=cutoff); }
+function rowLabelFromObj(r, idx){ const c=(r?.client||'').trim(); const pc=(r?.computer||'').trim(); if(c||pc) return `${c||'—'} / ${pc||'—'}`; return `Row #${idx+1}`; }
+function addChangeLogEntry(entry){ const logs=pruneChangeLog(loadChangeLog()); logs.push(entry); saveChangeLog(logs); }
+function logRowDiffs(oldRows,newRows){
+  const maxLen=Math.max(oldRows.length,newRows.length); const ts=Date.now(); const user='local';
+  for(let i=0;i<maxLen;i++){
+    const oldR=oldRows[i], newR=newRows[i];
+    if(!oldR && newR){ addChangeLogEntry({ts,user,type:'row_added',rowIndex:i,rowLabel:rowLabelFromObj(newR,i),changes:[{field:'row',from:null,to:'added'}]}); continue; }
+    if(oldR && !newR){ addChangeLogEntry({ts,user,type:'row_removed',rowIndex:i,rowLabel:rowLabelFromObj(oldR,i),changes:[{field:'row',from:'present',to:'removed'}]}); continue; }
+    if(!oldR||!newR) continue;
+    const fields=['client','billing_cycle','computer','device_type','product','planned_size','planned_unit','actual_size','actual_unit'];
+    const diffs=[];
+    for(const f of fields){ const a=(oldR[f]??'').toString(); const b=(newR[f]??'').toString(); if(a!==b) diffs.push({field:f,from:a,to:b}); }
+    if(diffs.length){ addChangeLogEntry({ts,user,type:'row_updated',rowIndex:i,rowLabel:rowLabelFromObj(newR,i),changes:diffs}); }
+  }
+}
+function escapeHtml(s){ return (s??'').toString().replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;'); }
+function renderChangeLog(){
+  const body=document.getElementById('changeLogBody');
+  const logs=pruneChangeLog(loadChangeLog()).sort((a,b)=>a.ts-b.ts);
+  if(!logs.length){ body.innerHTML=`<div style="color:#666; padding:10px 2px;">No changes recorded in the last 30 days.</div>`; return; }
+  const byDay={};
+  for(const e of logs){ const dayKey=new Date(e.ts).toLocaleDateString(); (byDay[dayKey] ||= []).push(e); }
+  const dayKeys=Object.keys(byDay).sort((a,b)=>new Date(a)-new Date(b));
+  body.innerHTML=dayKeys.map(day=>{
+    const entries=byDay[day].map(e=>{
+      const time=new Date(e.ts).toLocaleTimeString();
+      const changeLines=e.changes.map(c=>`<div style="margin-left:10px;">• <b>${c.field}</b>: <span style="color:#b00020;">${escapeHtml(c.from)}</span> → <span style="color:#0b3d91;">${escapeHtml(c.to)}</span></div>`).join('');
+      return `<div style="padding:6px 0; border-bottom:1px dashed #eee;"><div><b>${time}</b> — ${escapeHtml(e.rowLabel)} <span style="color:#666;">(${e.type.replace('_',' ')})</span></div>${changeLines}</div>`;
+    }).join('');
+    return `<div style="margin:10px 0 14px;"><div style="font-weight:700; background:#f7f9fb; border:1px solid #e6e9ee; padding:6px 8px; border-radius:8px;">${day}</div><div style="margin-top:6px;">${entries}</div></div>`;
+  }).join('');
+}
+function openChangeLog(){ renderChangeLog(); document.getElementById('changeLogModal').style.display='flex'; }
+function closeChangeLog(){ document.getElementById('changeLogModal').style.display='none'; }
+
+/*** Utils ***/
+function toGB(sizeStr, unit) {
+  const n = parseFloat(sizeStr);
+  if (!isFinite(n)) return 0;
+  const u = (unit || "GB").toUpperCase();
+  if (u === "TB") return n * 1000;
+  if (u === "MB") return n / 1000;
+  return n;
+}
+function tierCost(category, actualGB) {
+  const tiers = PRICING[category];
+  if (!tiers) return null;
+  const minGB = category === "Server" ? 500 : 100;
+  const gb = Math.max(actualGB, minGB);
+  for (const [cap, cost] of tiers) if (gb <= cap) return cost;
+  return tiers[tiers.length - 1][1];
+}
+function computeAlert(plannedGB, actualGB) {
+  if (!plannedGB || !actualGB) return { text: "", cls: "" };
+  if (actualGB > plannedGB) return { text: "⚠ Over planned", cls: "alert_over" };
+  return { text: "OK", cls: "alert_ok" };
+}
+function categoryFor(deviceType) { return (deviceType === "Server") ? "Server" : "Workstation"; }
+function debounce(fn, ms=600){ let t; const deb=(...args)=>{ clearTimeout(t); t=setTimeout(()=>fn(...args), ms); }; deb.flush=()=>{ clearTimeout(t); fn(); }; return deb; }
+
+/*** Rendering ***/
+function rowTemplate(data={}) {
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td><input type="text" class="client" value="${data.client ?? ''}"></td>
+    <td>
+      <select class="billing_cycle">
+        <option value="Monthly">Monthly</option>
+        <option value="Yearly">Yearly</option>
+      </select>
+    </td>
+    <td><input type="text" class="computer" value="${data.computer ?? ''}"></td>
+    <td>
+      <select class="device_type">
+        <option value=""></option>
+        <option value="Workstation">Workstation</option>
+        <option value="Laptop">Laptop</option>
+        <option value="Server">Server</option>
+      </select>
+    </td>
+    <td>
+      <select class="product">
+        <option value=""></option>
+        <option value="Documents Only">Documents Only</option>
+        <option value="All In 90 Day">All In 90 Day</option>
+      </select>
+    </td>
+    <td>
+      <select class="planned_size">
+        <option value=""></option>
+        ${plannedOptionsHTML}
+      </select>
+    </td>
+    <td>
+      <select class="planned_unit unit" disabled>
+        <option value="GB">GB</option>
+        <option value="TB">TB</option>
+      </select>
+    </td>
+    <td><input type="number" step="any" class="actual_size num" value="${data.actual_size ?? ''}"></td>
+    <td>
+      <select class="actual_unit unit">
+        <option value="MB">MB</option>
+        <option value="GB">GB</option>
+        <option value="TB">TB</option>
+      </select>
+    </td>
+    <td class="alert_cell"><span class="alert_badge" aria-live="polite"></span></td>
+    <td class="cost_cell"><span class="cost_badge" aria-live="polite"></span></td>
+    <td class="actions">
+      <button class="row-remove" title="Remove this row">Remove</button>
+    </td>
+  `;
+
+  const clientInp = tr.querySelector('.client');
+  if (clientInp) clientInp.addEventListener('input', () => { refreshClientFilterOptions(); refreshReportClientOptions(); applyClientFilter(); });
+
+  tr.querySelector('.device_type').value = data.device_type ?? '';
+  tr.querySelector('.product').value = data.product ?? '';
+  tr.querySelector('.planned_size').value = data.planned_size ?? '';
+  tr.querySelector('.billing_cycle').value = data.billing_cycle ?? 'Monthly';
+  tr.querySelector('.planned_unit').value = data.actual_unit ?? data.planned_unit ?? 'GB';
+  tr.querySelector('.planned_unit').disabled = true;
+  tr.querySelector('.actual_unit').value = data.actual_unit ?? 'GB';
+
+  tr.querySelector('.row-remove').addEventListener('click', () => {
+    const prev = loadFromLocal() || getRows();
+    tr.remove();
+    const current = getRows();
+    logRowDiffs(prev, current);
+    autosave();
+    refreshClientFilterOptions();
+    refreshReportClientOptions();
+    applyClientFilter();
+  });
+
+  tr.querySelectorAll('input, select').forEach(el => {
+    el.addEventListener('input', () => { recomputeRow(tr); autosave(); });
+    el.addEventListener('change', () => { recomputeRow(tr); autosave(); });
+  });
+
+  recomputeRow(tr);
+  return tr;
+}
+
+function setRows(newRows) {
+  rows = Array.isArray(newRows) ? newRows : [];
+  const body = document.querySelector('#backupTable tbody');
+  body.innerHTML = '';
+  rows.forEach(r => body.appendChild(rowTemplate(r)));
+  refreshClientFilterOptions();
+  refreshReportClientOptions();
+  applyClientFilter();
+  updateClientTotals();
+}
+
+function getRows() {
+  const body = document.querySelector('#backupTable tbody');
+  return [...body.querySelectorAll('tr')].map(tr => {
+    const g = sel => tr.querySelector(sel);
+    return {
+      client: g('.client').value.trim(),
+      billing_cycle: g('.billing_cycle').value,
+      computer: g('.computer').value.trim(),
+      device_type: g('.device_type').value,
+      product: g('.product').value,
+      planned_size: g('.planned_size').value,
+      planned_unit: g('.planned_unit').value,
+      actual_size: g('.actual_size').value,
+      actual_unit: g('.actual_unit').value
+    };
+  });
+}
+
+function recomputeRow(tr) {
+  const g = sel => tr.querySelector(sel);
+  const plannedSize = g('.planned_size').value;
+  const plannedUnit = g('.actual_unit').value;
+  g('.planned_unit').value = plannedUnit;
+
+  const actualSize = g('.actual_size').value;
+  const actualUnit = g('.actual_unit').value;
+  const deviceType = g('.device_type').value;
+  const product = g('.product').value;
+  const billing = g('.billing_cycle')?.value ?? 'Monthly';
+
+  const plannedGB = (parseFloat(plannedSize) || 0);
+  const actualGB = toGB(actualSize, actualUnit);
+
+  const badge = g('.alert_badge');
+  const alert = computeAlert(plannedGB, actualGB);
+  badge.textContent = alert.text;
+  badge.className = 'alert_badge ' + alert.cls;
+
+  const cat = categoryFor(deviceType);
+
+  const noCharge = plannedSize === 'NO_CHARGE';
+  const documentsOnly = product === 'Documents Only';
+  const forcedFree = noCharge || documentsOnly;
+
+  const baseMonthlyCost = forcedFree ? 0 : (tierCost(cat, actualGB) ?? 0);
+  tr.dataset.monthly_cost = baseMonthlyCost;
+
+  const displayCost = billing === 'Yearly' ? baseMonthlyCost * 12 : baseMonthlyCost;
+  const suffix = billing === 'Yearly' ? '/Yr' : '/mo';
+
+  const costBadge = g('.cost_badge');
+  costBadge.textContent = '$' + displayCost.toFixed(0) + suffix;
+}
+
+/* ====== Client filter + totals ====== */
+function getDistinctClients() {
+  const set = new Set();
+  document.querySelectorAll('#backupTable tbody tr').forEach(tr => {
+    const name = (tr.querySelector('.client')?.value || '').trim();
+    if (name) set.add(name);
+  });
+  return Array.from(set).sort((a,b)=>a.localeCompare(b));
+}
+
+function refreshClientFilterOptions() {
+  const sel = document.getElementById('clientFilterSelect');
+  if (!sel) return;
+  const current = sel.value;
+  const clients = getDistinctClients();
+  sel.innerHTML = '<option value="">All Clients</option>' +
+    clients.map(c => `<option value="${c.replace(/"/g,'&quot;')}">${c}</option>`).join('');
+  if (current && clients.includes(current)) sel.value = current;
+}
+
+function applyClientFilter() {
+  const sel = document.getElementById('clientFilterSelect');
+  const target = sel ? sel.value.trim() : '';
+  document.querySelectorAll('#backupTable tbody tr').forEach(tr => {
+    const name = (tr.querySelector('.client')?.value || '').trim();
+    tr.style.display = (!target || name === target) ? '' : 'none';
+  });
+  updateClientTotals();
+}
+
+function rowMonthlyCost(tr) {
+  const billing = tr.querySelector('.billing_cycle')?.value ?? 'Monthly';
+  const baseMonthly = parseFloat(tr.dataset.monthly_cost || '0') || 0;
+  return billing === 'Yearly' ? baseMonthly * 12 : baseMonthly;
+}
+function updateClientTotals() {
+  const totalsEl = document.getElementById('clientTotals');
+  if (!totalsEl) return;
+  let totalGB = 0, totalCost = 0, count = 0;
+  document.querySelectorAll('#backupTable tbody tr').forEach(tr => {
+    if (tr.style.display === 'none') return;
+    const actualSize = tr.querySelector('.actual_size')?.value;
+    const actualUnit = tr.querySelector('.actual_unit')?.value || 'GB';
+    if (actualSize) totalGB += toGB(actualSize, actualUnit);
+    totalCost += rowMonthlyCost(tr);
+    count++;
+  });
+  totalsEl.textContent = `Totals (${count} device${count===1?'':'s'}): ${(totalGB/1000).toFixed(2)} TB used • $${totalCost.toFixed(2)}/mo`;
+}
+
+/* ====== NEW REPORTING LOGIC ====== */
+
+function refreshReportClientOptions() {
+  const sel = document.getElementById('reportClientSelect');
+  if (!sel) return;
+  const current = sel.value;
+  const clients = getDistinctClients();
+  sel.innerHTML = '<option value="">All Clients</option>' +
+    clients.map(c => `<option value="${c.replace(/"/g,'&quot;')}">${c}</option>`).join('');
+  if (current && clients.includes(current)) sel.value = current;
+}
+
+function collectReportRows(selectedClient='') {
+  const out = [];
+  document.querySelectorAll('#backupTable tbody tr').forEach(tr => {
+    const client = (tr.querySelector('.client')?.value || '').trim();
+    if (selectedClient && client !== selectedClient) return;
+
+    const computer = (tr.querySelector('.computer')?.value || '').trim();
+    const device_type = tr.querySelector('.device_type')?.value || '';
+    const product = tr.querySelector('.product')?.value || '';
+
+    const actual_size = tr.querySelector('.actual_size')?.value ?? '0';
+    const actual_unit = tr.querySelector('.actual_unit')?.value || 'GB';
+    const actualGB = toGB(actual_size, actual_unit);
+
+    const billing = tr.querySelector('.billing_cycle')?.value || 'Monthly';
+    const baseMonthly = parseFloat(tr.dataset.monthly_cost || '0') || 0;
+    const displayCost = billing === 'Yearly' ? baseMonthly * 12 : baseMonthly;
+    const costSuffix = billing === 'Yearly' ? '/Yr' : '/mo';
+
+    out.push({
+      client, computer, device_type, product,
+      actual_size, actual_unit, actualGB,
+      billing, displayCost, costSuffix
+    });
+  });
+  return out;
+}
+
+function renderReport(rows, groupBy='client') {
+  const container = document.getElementById('reportOutput');
+  if (!container) return;
+
+  if (!rows.length) {
+    container.innerHTML = `<div style="color:#666; padding:8px;">No rows found for that client.</div>`;
+    return;
+  }
+
+  const groups = {};
+  if (groupBy === 'client') {
+    rows.forEach(r => (groups[r.client || '—'] ||= []).push(r));
+  } else {
+    groups['All Devices'] = rows;
+  }
+
+  let grandGB = 0, grandCost = 0;
+
+  const groupsHtml = Object.entries(groups).map(([gname, grows]) => {
+    let totalGB = 0, totalCost = 0;
+
+    const bodyRows = grows.map(r => {
+      totalGB += r.actualGB;
+      totalCost += r.displayCost;
+
+      return `
+        <tr>
+          <td>${escapeHtml(r.client)}</td>
+          <td>${escapeHtml(r.computer)}</td>
+          <td>${escapeHtml(r.device_type)}</td>
+          <td class="right">${escapeHtml(r.actual_size)} ${escapeHtml(r.actual_unit)}</td>
+          <td class="right">${r.actualGB.toFixed(2)} GB</td>
+          <td class="right">$${r.displayCost.toFixed(2)}${r.costSuffix}</td>
+        </tr>
+      `;
+    }).join('');
+
+    grandGB += totalGB;
+    grandCost += totalCost;
+
+    return `
+      <div class="report-group">
+        <div class="report-group-title">
+          ${escapeHtml(gname)}
+          <span style="font-weight:600; color:#444; font-size:12px;">
+            — ${grows.length} device${grows.length===1?'':'s'}
+          </span>
+        </div>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Client</th>
+              <th>Device</th>
+              <th>Type</th>
+              <th>Actual Size</th>
+              <th>Actual (GB)</th>
+              <th>Cost</th>
+            </tr>
+          </thead>
+          <tbody>${bodyRows}</tbody>
+          <tfoot>
+            <tr>
+              <td colspan="4" class="right" style="font-weight:700;">Group Totals:</td>
+              <td class="right" style="font-weight:700;">${(totalGB/1000).toFixed(2)} TB</td>
+              <td class="right" style="font-weight:700;">$${totalCost.toFixed(2)}/mo*</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    `;
+  }).join('');
+
+  container.innerHTML = `
+    <div class="report-card">
+      ${groupsHtml}
+      <div style="margin-top:10px; font-weight:800; font-size:13px; text-align:right;">
+        Grand Total: ${(grandGB/1000).toFixed(2)} TB • $${grandCost.toFixed(2)}/mo*
+      </div>
+      <div class="report-meta">
+        *Yearly-billed devices show yearly line cost; totals normalized to displayed cycle.
+      </div>
+    </div>
+  `;
+}
+
+function exportReportCSV(rows){
+  const header = ['Client','Device','Type','Product','Actual Size','Actual Unit','Actual GB','Billing Cycle','Cost'];
+  const lines = rows.map(r => [
+    r.client, r.computer, r.device_type, r.product,
+    r.actual_size, r.actual_unit, r.actualGB.toFixed(2),
+    r.billing, `${r.displayCost.toFixed(2)}${r.costSuffix}`
+  ]);
+  const csv = [header, ...lines]
+    .map(arr => arr.map(v => `"${(v ?? '').toString().replace(/"/g,'""')}"`).join(','))
+    .join('\n');
+
+  const blob = new Blob([csv], {type:'text/csv'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'Backup_Report.csv';
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function printReport(){
+  const win = window.open('', '_blank');
+  if (!win) return alert('Popup blocked.');
+  const reportHtml = document.getElementById('reportOutput')?.innerHTML || '';
+  const dateStr = new Date().toLocaleString();
+
+  win.document.write(`
+    <html><head>
+      <title>Backup Usage & Billing Report</title>
+      <style>
+        body { font-family: Arial, sans-serif; margin: 24px; color:#111; }
+        h1 { font-size:18px; margin:0 0 6px; }
+        .meta { font-size:12px; color:#555; margin-bottom:12px; }
+        table { width:100%; border-collapse:collapse; font-size:11px; margin-top:6px; }
+        th, td { border:1px solid #ddd; padding:6px; }
+        th { background:#f3f5f7; text-align:left; }
+        @media print { button { display:none; } body { margin: 10mm; } }
+      </style>
+    </head><body>
+      <h1>Backup Usage & Billing Report</h1>
+      <div class="meta">Generated: ${dateStr}</div>
+      ${reportHtml}
+      <button onclick="window.print()">Print / Save PDF</button>
+    </body></html>
+  `);
+  win.document.close();
+  win.focus();
+  setTimeout(()=>win.print(), 200);
+}
+
+/*** Local + Sheet persistence (unchanged) ***/
+function saveToLocal(){ localStorage.setItem('clientBackupPlannerRows', JSON.stringify(getRows())); }
+function loadFromLocal(){ const raw=localStorage.getItem('clientBackupPlannerRows'); if(!raw) return null; try{ return JSON.parse(raw);}catch{return null;} }
+async function saveToSheet(payload){
+  const url=`${SHEET_API_URL}?action=save&key=${encodeURIComponent(SHEET_KEY)}&token=${encodeURIComponent(SHEET_TOKEN)}`;
+  try{ await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload),mode:"no-cors"});}catch(e){ console.warn("Sheet save failed", e); }
+}
+async function loadFromSheet(){
+  const url=`${SHEET_API_URL}?action=load&key=${encodeURIComponent(SHEET_KEY)}&token=${encodeURIComponent(SHEET_TOKEN)}`;
+  try{ const res=await fetch(url); const json=await res.json(); if(json && json.ok) return json.data; }catch(e){ console.warn("Sheet load failed (likely CORS). Falling back to localStorage.", e); }
+  return null;
+}
+
+const autosave = debounce(async () => {
+  const prev = loadFromLocal() || [];
+  const current = getRows();
+  logRowDiffs(prev, current);
+  localStorage.setItem('clientBackupPlannerRows', JSON.stringify(current));
+  await saveToSheet({ rows: current, updatedAt: new Date().toISOString() });
+}, 800);
+
+/*** Pricing guide render ***/
+function renderPricingTables() {
+  const wsBody = document.getElementById('pricingWorkstations');
+  const svBody = document.getElementById('pricingServers');
+  const makeRow = (label, cost) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td style="padding-right:12px;">${label}</td><td style="text-align:right;">$${cost}</td>`;
+    return tr;
+  };
+  wsBody.innerHTML = '';
+  PRICING.Workstation.forEach(([gb,cost]) => {
+    const label = gb >= 1000 ? (gb/1000).toFixed(gb%1000?2:0) + ' TB' : gb + ' GB';
+    wsBody.appendChild(makeRow(label, cost));
+  });
+  wsBody.appendChild(makeRow('No Charge', 0));
+
+  svBody.innerHTML = '';
+  PRICING.Server.forEach(([gb,cost]) => {
+    const label = gb >= 1000 ? (gb/1000).toFixed(gb%1000?2:0) + ' TB' : gb + ' GB';
+    svBody.appendChild(makeRow(label, cost));
+  });
+}
+
+/*** Init ***/
+async function init() {
+  renderPricingTables();
+  const sheetData = await loadFromSheet();
+  if (sheetData && sheetData.rows) setRows(sheetData.rows);
+  else {
+    const local = loadFromLocal();
+    setRows(local && local.length ? local : INITIAL_ROWS);
+  }
+}
+
+document.getElementById('addRowBtn').addEventListener('click', () => {
+  document.querySelector('#backupTable tbody').appendChild(rowTemplate({}));
+  refreshClientFilterOptions();
+  refreshReportClientOptions();
+  applyClientFilter();
+  updateClientTotals();
+  autosave();
+});
+
+document.getElementById('saveBtn').addEventListener('click', async () => {
+  autosave.flush();
+  saveToLocal();
+  await saveToSheet({ rows: getRows(), updatedAt: new Date().toISOString() });
+  alert('Saved.');
+});
+
+document.getElementById('downloadBtn').addEventListener('click', () => {
+  const rows = getRows();
+  const clone = document.documentElement.cloneNode(true);
+  const script = clone.querySelector('script');
+  script.textContent = script.textContent.replace(/const INITIAL_ROWS = \[.*?\];/s, 'const INITIAL_ROWS = ' + JSON.stringify(rows, null, 2) + ';');
+  const blob = new Blob(['<!DOCTYPE html>\n' + clone.outerHTML], {type:'text/html'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'Client_Backup_Planner.html';
+  a.click();
+  URL.revokeObjectURL(url);
+});
+
+init();
+
+window.addEventListener('DOMContentLoaded', () => {
+  // Client filter
+  const clientFilterSelect = document.getElementById('clientFilterSelect');
+  const clearClientFilterBtn = document.getElementById('clearClientFilterBtn');
+  if (clientFilterSelect) clientFilterSelect.addEventListener('change', applyClientFilter);
+  if (clearClientFilterBtn) clearClientFilterBtn.addEventListener('click', () => {
+    clientFilterSelect.value = '';
+    applyClientFilter();
+  });
+
+  // Change log
+  const clb = document.getElementById('changeLogBtn');
+  const clClose = document.getElementById('changeLogCloseBtn');
+  const clModal = document.getElementById('changeLogModal');
+  if (clb) clb.addEventListener('click', openChangeLog);
+  if (clClose) clClose.addEventListener('click', closeChangeLog);
+  if (clModal) clModal.addEventListener('click', (e) => { if (e.target === clModal) closeChangeLog(); });
+
+  // Alerts report
+  const rb = document.getElementById('reportBtn');
+  if (rb) rb.addEventListener('click', generateAlertsReport);
+
+  refreshClientFilterOptions();
+  refreshReportClientOptions();
+  applyClientFilter();
+  updateClientTotals();
+
+  // Reporting buttons
+  document.getElementById('runReportBtn').addEventListener('click', () => {
+    const client = document.getElementById('reportClientSelect').value.trim();
+    const groupBy = document.getElementById('reportGroupSelect').value;
+    const rows = collectReportRows(client);
+    renderReport(rows, groupBy);
+    document.getElementById('printReportBtn').disabled = false;
+    document.getElementById('csvReportBtn').disabled = false;
+  });
+
+  document.getElementById('printReportBtn').addEventListener('click', printReport);
+
+  document.getElementById('csvReportBtn').addEventListener('click', () => {
+    const client = document.getElementById('reportClientSelect').value.trim();
+    exportReportCSV(collectReportRows(client));
+  });
+});
+
+/* ===== Existing Alerts Report + Sorting (unchanged) ===== */
+function getAlertRows() {
+  const rows = [];
+  document.querySelectorAll('#backupTable tbody tr').forEach(tr => {
+    const alertText = (tr.querySelector('.alert_badge')?.textContent || '').trim();
+    if (!alertText || alertText.toLowerCase() === 'ok') return;
+    const client = (tr.querySelector('.client')?.value || '').trim();
+    const computer = (tr.querySelector('.computer')?.value || '').trim();
+    const plannedSize = tr.querySelector('.planned_size')?.value || '';
+    const plannedUnit = tr.querySelector('.planned_unit')?.value || 'GB';
+    const actualSize = tr.querySelector('.actual_size')?.value || '';
+    const actualUnit = tr.querySelector('.actual_unit')?.value || 'GB';
+    rows.push({
+      client, computer,
+      plannedDisplay: plannedSize ? `${plannedSize} ${plannedUnit}` : '',
+      actualDisplay: actualSize ? `${actualSize} ${actualUnit}` : '',
+      alertText
+    });
+  });
+  return rows;
+}
+function generateAlertsReport() {
+  const alertRows = getAlertRows();
+  const win = window.open('', '_blank');
+  if (!win) { alert('Popup blocked. Please allow popups for this file to generate the report.'); return; }
+  const dateStr = new Date().toLocaleString();
+  const style = `
+    <style>
+      body { font-family: Arial, sans-serif; margin: 28px; color:#111; }
+      h1 { font-size: 20px; margin-bottom: 4px; }
+      .meta { font-size: 12px; color:#555; margin-bottom: 16px; }
+      table { width: 100%; border-collapse: collapse; font-size: 12px; }
+      th, td { border: 1px solid #ddd; padding: 8px; vertical-align: top; }
+      th { background:#f3f5f7; text-align: left; }
+      .badge { display:inline-block; padding:2px 6px; border-radius:10px; font-size:11px; }
+      .over { background:#ffe2e2; color:#a40000; border:1px solid #f5b5b5; }
+      .under { background:#fff5d9; color:#8a5a00; border:1px solid #f0d08a; }
+      .footer { margin-top: 14px; font-size: 11px; color:#666; }
+      @media print { button { display:none; } body { margin: 12mm; } }
+    </style>`;
+  const rowsHtml = alertRows.length ? alertRows.map(r => `
+    <tr>
+      <td>${r.client || '-'}</td>
+      <td>${r.computer || '-'}</td>
+      <td>${r.plannedDisplay || '-'}</td>
+      <td>${r.actualDisplay || '-'}</td>
+      <td><span class="badge ${/over/i.test(r.alertText) ? 'over' : 'under'}">${r.alertText}</span></td>
+    </tr>
+  `).join('') : `<tr><td colspan="5" style="text-align:center; padding:20px;">No alerts found.</td></tr>`;
+  win.document.write(`
+  <html><head><title>Backup Alerts Report</title>${style}</head><body>
+    <h1>Backup Alerts Review Report</h1>
+    <div class="meta">Generated: ${dateStr}</div>
+    <table>
+      <thead><tr>
+        <th>Client Name</th><th>Computer Name</th><th>Planned Size</th><th>Actual Size</th><th>Alert</th>
+      </tr></thead>
+      <tbody>${rowsHtml}</tbody>
+    </table>
+    <div class="footer">This report includes only devices currently flagged by the planner.</div>
+    <button onclick="window.print()">Print / Save as PDF</button>
+  </body></html>`);
+  win.document.close();
+  win.focus();
+  setTimeout(()=>win.print(), 300);
+}
+</script>
+</body>
+</html>
